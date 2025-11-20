@@ -1,0 +1,11 @@
+# Ignore the virtual environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Ignore files for debug
+.debug/
+debug/
+*.log
+*.json
