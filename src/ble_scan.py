@@ -1,8 +1,12 @@
 import asyncio
 from bleak import BleakScanner
+from BLEPacketDecoder import BLEPacketDecoder
 
 LATEST = {}  # addr -> (device, advertisement_data)
+DECODER = BLEPacketDecoder()
 SCAN_SECONDS = 5.0
+
+last_selected_addr = None
 
 def detection_callback(device, advertisement_data):
     LATEST[getattr(device, "address", "<no-address>")] = (device, advertisement_data)
@@ -85,11 +89,11 @@ async def main_loop():
     def print_list():
         for i, addr in enumerate(addrs(), start=1):
             device, _ = LATEST[addr]
-            print(f"{i}. {short_name(device)}, {addr}")
-
+            print(f"{i:<2} {short_name(device):<18} {addr}")
+    last_selected_addr = None
     print_list()
     while True:
-        s = input("Enter device number to show adv (L=list & rescan, q=quit): ").strip()
+        s = input("Enter device number to show adv (L=list & rescan, p=print parsed, q=quit): ").strip()
         if not s:
             continue
         if s.lower() == "q":
@@ -101,17 +105,38 @@ async def main_loop():
                 print("No devices found.")
             print_list()
             continue
+        if s.lower() == "p":
+            if last_selected_addr is None:
+                print("No device selected yet. Choose a device number first.")
+                continue
+            entry = LATEST.get(last_selected_addr)
+            if not entry:
+                print("Previously selected device is no longer available. Rescan (L) to refresh.")
+                continue
+            device, adv = entry
+            if device is None:
+                print("Previously selected device is no longer available. Rescan (L) to refresh.")
+                continue
+            # DECODER expects hex string of raw TLV; build raw bytes from advertisement_data as before
+            raw = build_raw_adv(adv)
+            if not raw:
+                print("No raw advertisement available to parse.")
+                continue
+            DECODER.decode_and_print(raw.hex())
+            continue
         try:
             n = int(s)
         except ValueError:
-            print("Enter a number, 'L' to rescan and list, or 'q' to quit.")
+            print("Enter a number, 'L' to rescan and list, 'p' to print parsed, or 'q' to quit.")
             continue
         current_addrs = addrs()
         if not (1 <= n <= len(current_addrs)):
             print("Invalid number.")
             continue
+        # validate n...
         addr = current_addrs[n - 1]
         device, adv = LATEST[addr]
+        last_selected_addr = addr
         print_adv_details(device, adv)
         # после показа пакета не печатаем список снова — ждем очередного ввода
 
@@ -120,9 +145,8 @@ if __name__ == "__main__":
 
 
 
-""" A compact working Python script for Bleak 1.1.1 (Windows) that:
+""" Launch: The script first scans for 5 seconds and prints a list. Input:
 
-- scans for 5 seconds,
-- outputs a numbered list of devices: "N. Name, MAC" (name or ),
-- requests the device number and displays its last received advertising packet (manufacturer/service data, service UUIDs, raw TLV hex),
-- then waits for the number to be entered again (enter q to quit). """
+- number — show the packet for the selected device (after displaying, it will return to the prompt),
+- l — scan again and print the list of found devices,
+- q — exit. """
