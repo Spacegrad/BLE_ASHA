@@ -4,7 +4,7 @@ from BLEPacketDecoder import BLEPacketDecoder
 
 LATEST = {}  # addr -> (device, advertisement_data)
 DECODER = BLEPacketDecoder()
-SCAN_SECONDS = 5.0
+SCAN_SECONDS = 6.0
 
 last_selected_addr = None
 
@@ -24,7 +24,7 @@ def short_name(device):
 def format_tlv_hex(ad_bytes: bytes) -> str:
     return " ".join(f"{b:02x}" for b in ad_bytes)
 
-def build_raw_adv(advertisement_data):
+""" def build_raw_adv(advertisement_data):
     raw = getattr(advertisement_data, "raw_data", None)
     if isinstance(raw, (bytes, bytearray)):
         return bytes(raw)
@@ -35,8 +35,20 @@ def build_raw_adv(advertisement_data):
     sd = getattr(advertisement_data, "service_data", None) or {}
     for uuid, b in sd.items():
         try:
-            if isinstance(uuid, str) and uuid.lower().endswith("00001000800000805f9b34fb"):
-                u16 = int(uuid[4:8], 16)
+            us = str(uuid).lower()
+            if len(us) == 4:
+                u16 = int(us, 16)
+            elif us.endswith("00001000800000805f9b34fb"):
+                u16 = int(us[4:8], 16)
+            else:
+                raise ValueError
+            payload = bytes(b)
+            entry = bytes([len(payload) + 3, 0x16, u16 & 0xFF, (u16 >> 8) & 0xFF]) + payload
+            parts += entry
+            continue
+        except Exception:
+            pass
+
                 payload = bytes(b)
                 entry = bytes([len(payload) + 3, 0x16, u16 & 0xFF, (u16 >> 8) & 0xFF]) + payload
                 parts += entry
@@ -53,6 +65,74 @@ def build_raw_adv(advertisement_data):
         cid_le = bytes([cid & 0xFF, (cid >> 8) & 0xFF])
         entry = bytes([len(payload_b) + len(cid_le) + 1, 0xFF]) + cid_le + payload_b
         parts += entry
+    return bytes(parts) """
+
+def build_raw_adv(advertisement_data):
+    parts = bytearray()
+    
+    # 1. Flags (если есть)
+    flags = getattr(advertisement_data, "flags", None)
+    if flags is not None:
+        parts.extend(bytes([0x02, 0x01, flags]))
+    
+    # 2. Service UUIDs (16-bit)
+    service_uuids = getattr(advertisement_data, "service_uuids", []) or []
+    for uuid in service_uuids:
+        try:
+            # Обрабатываем 16-битные UUID
+            if uuid.startswith("0000") and uuid.endswith("-0000-1000-8000-00805f9b34fb"):
+                uuid_16 = int(uuid[4:8], 16)
+                parts.extend(bytes([0x03, 0x02, uuid_16 & 0xFF, (uuid_16 >> 8) & 0xFF]))
+        except Exception:
+            pass
+    
+    # 3. Service Data
+    service_data = getattr(advertisement_data, "service_data", None) or {}
+    for uuid, data in service_data.items():
+        try:
+            data_bytes = bytes(data)
+            # Для 16-битных UUID
+            if uuid.startswith("0000") and uuid.endswith("-0000-1000-8000-00805f9b34fb"):
+                uuid_16 = int(uuid[4:8], 16)
+                entry_length = len(data_bytes) + 2  # +2 для UUID
+                parts.extend(bytes([entry_length + 1, 0x16]))
+                parts.extend(bytes([uuid_16 & 0xFF, (uuid_16 >> 8) & 0xFF]))
+                parts.extend(data_bytes)
+            else:
+                # Для других UUID - добавляем как есть
+                uuid_bytes = bytes.fromhex(uuid.replace('-', ''))
+                entry_length = len(data_bytes) + len(uuid_bytes)
+                parts.extend(bytes([entry_length + 1, 0x16]))
+                parts.extend(uuid_bytes)
+                parts.extend(data_bytes)
+        except Exception:
+            pass
+    
+    # 4. Local Name
+    name = getattr(advertisement_data, "local_name", None) or getattr(advertisement_data, "local_name_complete", None)
+    if name:
+        name_bytes = name.encode('utf-8', errors="ignore")
+        parts.extend(bytes([len(name_bytes) + 1, 0x09]))
+        parts.extend(name_bytes)
+    
+    # 5. Manufacturer Data
+    manufacturer_data = getattr(advertisement_data, "manufacturer_data", None) or {}
+    for company_id, data in manufacturer_data.items():
+        data_bytes = bytes(data)
+        # Company ID в little-endian
+        company_id_le = bytes([company_id & 0xFF, (company_id >> 8) & 0xFF])
+        entry_length = len(data_bytes) + 2  # +2 для Company ID
+        parts.extend(bytes([entry_length + 1, 0xFF]))
+        parts.extend(company_id_le)
+        parts.extend(data_bytes)
+    
+    # 6. TX Power (если есть)
+    tx_power = getattr(advertisement_data, "tx_power", None)
+    if tx_power is not None:
+        # Преобразуем в signed byte
+        tx_byte = tx_power & 0xFF if tx_power >= 0 else (256 + tx_power) & 0xFF
+        parts.extend(bytes([0x02, 0x0A, tx_byte]))
+    
     return bytes(parts)
 
 def print_adv_details(device, advertisement_data):
@@ -149,4 +229,5 @@ if __name__ == "__main__":
 
 - number — show the packet for the selected device (after displaying, it will return to the prompt),
 - l — scan again and print the list of found devices,
+- p - parse current ADV pack
 - q — exit. """

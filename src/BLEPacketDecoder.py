@@ -80,6 +80,7 @@ class BLEPacketDecoder:
             print(f"❌ Ошибка: {result['error']}")
             return result
 
+        print(" ")
         print("=" * 80)
         print(f"BLE ASHA Packet Decoder")
         print("=" * 80)
