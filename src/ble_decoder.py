@@ -219,7 +219,7 @@ class BLEPacketDecoder:
         return decoded_data
     
     def print_decoded_packet(self, hex_string: str):
-        """Красиво выводит расшифрованный пакет"""
+        """Структурировано выводит расшифрованный пакет"""
         result = self.parse_packet(hex_string)
         
         if "error" in result:
