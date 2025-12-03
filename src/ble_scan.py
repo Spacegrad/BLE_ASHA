@@ -1,5 +1,6 @@
 import asyncio
 import struct
+import traceback
 from bleak import BleakScanner, BleakClient
 from bleak.exc import BleakError
 from BLEPacketDecoder import BLEPacketDecoder
@@ -238,6 +239,245 @@ STANDARD_CHARACTERISTICS = {
     "00002ade-0000-1000-8000-00805f9b34fb": "Mesh Proxy Data Out",
 }
 
+# Добавьте после STANDARD_CHARACTERISTICS
+STANDARD_DESCRIPTORS = {
+    "00002900-0000-1000-8000-00805f9b34fb": "Characteristic Extended Properties",
+    "00002901-0000-1000-8000-00805f9b34fb": "Characteristic User Description",
+    "00002902-0000-1000-8000-00805f9b34fb": "Client Characteristic Configuration (CCCD)",
+    "00002903-0000-1000-8000-00805f9b34fb": "Server Characteristic Configuration",
+    "00002904-0000-1000-8000-00805f9b34fb": "Characteristic Presentation Format",
+    "00002905-0000-1000-8000-00805f9b34fb": "Characteristic Aggregate Format",
+    "00002906-0000-1000-8000-00805f9b34fb": "Valid Range",
+    "00002907-0000-1000-8000-00805f9b34fb": "External Report Reference",
+    "00002908-0000-1000-8000-00805f9b34fb": "Report Reference",
+    "00002909-0000-1000-8000-00805f9b34fb": "Number of Digitals",
+    "0000290a-0000-1000-8000-00805f9b34fb": "Value Trigger Setting",
+    "0000290b-0000-1000-8000-00805f9b34fb": "Environmental Sensing Configuration",
+    "0000290c-0000-1000-8000-00805f9b34fb": "Environmental Sensing Measurement",
+    "0000290d-0000-1000-8000-00805f9b34fb": "Environmental Sensing Trigger Setting",
+    "0000290e-0000-1000-8000-00805f9b34fb": "Time Trigger Setting",
+}
+
+def get_descriptor_name(uuid: str) -> str:
+    """Возвращает читаемое имя дескриптора по UUID"""
+    uuid_lower = uuid.lower()
+    if uuid_lower in STANDARD_DESCRIPTORS:
+        return STANDARD_DESCRIPTORS[uuid_lower]
+    
+    # Если UUID короткий (16-bit), показываем в коротком формате
+    if uuid_lower.startswith("0000") and uuid_lower.endswith("-0000-1000-8000-00805f9b34fb"):
+        short_uuid = uuid_lower[4:8].upper()
+        return f"Unknown Descriptor (0x{short_uuid})"
+    
+    return uuid_lower
+
+async def read_descriptor_value(client, descriptor):
+    """Читает значение дескриптора и возвращает в читаемом формате"""
+    try:
+        if not client.is_connected:
+            return "<client not connected>"
+        
+        # Читаем значение дескриптора
+        value = await client.read_gatt_descriptor(descriptor.handle)
+        
+        if not value:
+            return "<empty>"
+        
+        # Особые случаи для стандартных дескрипторов
+        descriptor_uuid = descriptor.uuid.lower()
+        
+        # CCCD (Client Characteristic Configuration Descriptor)
+        if descriptor_uuid == "00002902-0000-1000-8000-00805f9b34fb":
+            if len(value) >= 2:
+                cccd_value = struct.unpack('<H', value[:2])[0]
+                flags = []
+                if cccd_value & 0x0001:
+                    flags.append("Notifications enabled")
+                if cccd_value & 0x0002:
+                    flags.append("Indications enabled")
+                if cccd_value & 0x0004:
+                    flags.append("Broadcasts enabled")
+                
+                if flags:
+                    return f"0x{cccd_value:04X} ({', '.join(flags)})"
+                else:
+                    return f"0x{cccd_value:04X} (disabled)"
+        
+        # Characteristic Presentation Format
+        elif descriptor_uuid == "00002904-0000-1000-8000-00805f9b34fb" and len(value) >= 7:
+            try:
+                format_type, exponent, unit, namespace, description = struct.unpack('<BbHHB', value[:7])
+                
+                # Расшифровка формата
+                format_names = {
+                    0x01: "boolean",
+                    0x02: "unsigned 2-bit",
+                    0x03: "unsigned 4-bit",
+                    0x04: "unsigned 8-bit",
+                    0x05: "unsigned 12-bit",
+                    0x06: "unsigned 16-bit",
+                    0x07: "unsigned 24-bit",
+                    0x08: "unsigned 32-bit",
+                    0x09: "unsigned 48-bit",
+                    0x0A: "unsigned 64-bit",
+                    0x0B: "unsigned 128-bit",
+                    0x0C: "signed 8-bit",
+                    0x0D: "signed 12-bit",
+                    0x0E: "signed 16-bit",
+                    0x0F: "signed 24-bit",
+                    0x10: "signed 32-bit",
+                    0x11: "signed 48-bit",
+                    0x12: "signed 64-bit",
+                    0x13: "signed 128-bit",
+                    0x14: "float 32-bit",
+                    0x15: "float 64-bit",
+                    0x16: "SFLOAT",
+                    0x17: "FLOAT",
+                    0x18: "duint16",
+                    0x19: "utf8s",
+                    0x1A: "utf16s",
+                    0x1B: "struct",
+                }
+                
+                format_name = format_names.get(format_type, f"unknown (0x{format_type:02X})")
+                
+                return (f"Format: {format_name}, "
+                        f"Exponent: {exponent}, "
+                        f"Unit: 0x{unit:04X}, "
+                        f"Namespace: {namespace}, "
+                        f"Description: {description}")
+            except:
+                pass
+        
+        # Для остальных дескрипторов используем стандартное декодирование
+        return decode_characteristic_value(value)
+        
+    except asyncio.TimeoutError:
+        return "<read timeout>"
+    except Exception as e:
+        return f"<read error: {str(e)}>"
+
+async def explore_descriptors_detailed(device_address: str, device_name: str = None):
+    """
+    Подключается к устройству и показывает все дескрипторы с детальной информацией
+    """
+    print(f"\n{'='*60}")
+    print(f"Detailed Descriptor Explorer")
+    print(f"Device: {device_name or device_address}")
+    print(f"Address: {device_address}")
+    print(f"{'='*60}\n")
+    
+    client = None
+    try:
+        client = BleakClient(device_address, timeout=7.0)
+        
+        print("Connecting...")
+        await client.connect()
+        
+        if client.is_connected:
+            print("✓ Connected successfully!\n")
+            
+            # Получаем сервисы
+            services = []
+            try:
+                await client.discover()
+            except AttributeError:
+                pass
+            
+            try:
+                services = client.services
+            except AttributeError:
+                try:
+                    services = await client.get_services()
+                except AttributeError:
+                    services = getattr(client, '_services', [])
+            
+            if isinstance(services, list):
+                services_list = services
+            else:
+                services_list = list(services) if hasattr(services, '__iter__') else []
+            
+            total_descriptors = 0
+            
+            for service_index, service in enumerate(services_list, 1):
+                try:
+                    characteristics = service.characteristics
+                except AttributeError:
+                    characteristics = []
+                
+                service_has_descriptors = False
+                
+                for char_index, char in enumerate(characteristics, 1):
+                    try:
+                        descriptors = char.descriptors if hasattr(char, 'descriptors') else []
+                    except:
+                        descriptors = []
+                    
+                    if descriptors:
+                        if not service_has_descriptors:
+                            service_name = get_service_name(service.uuid)
+                            print(f"\n{'─'*40}")
+                            print(f"Service {service_index}: {service_name}")
+                            print(f"Service UUID: {service.uuid}")
+                            print(f"{'─'*40}")
+                            service_has_descriptors = True
+                        
+                        char_name = get_characteristic_name(char.uuid)
+                        print(f"\n  Characteristic {char_index}: {char_name}")
+                        print(f"  Characteristic UUID: {char.uuid}")
+                        print(f"  Characteristic Handle: 0x{char.handle:04X}" if hasattr(char, 'handle') else "  Characteristic Handle: N/A")
+                        print(f"  Properties: {format_properties(char.properties)}")
+                        
+                        for desc_index, desc in enumerate(descriptors, 1):
+                            total_descriptors += 1
+                            
+                            desc_name = get_descriptor_name(desc.uuid)
+                            desc_handle = desc.handle if hasattr(desc, 'handle') else "N/A"
+                            
+                            print(f"\n    [Descriptor {desc_index}] {desc_name}")
+                            print(f"      UUID: {desc.uuid}")
+                            print(f"      Handle: 0x{desc_handle:04X}" if isinstance(desc_handle, int) else f"      Handle: {desc_handle}")
+                            
+                            # Читаем значение
+                            try:
+                                desc_value = await read_descriptor_value(client, desc)
+                                print(f"      Value: {desc_value}")
+                            except Exception as e:
+                                print(f"      Value: <error: {str(e)}>")
+                        
+                        print(f"    └── Total descriptors for this characteristic: {len(descriptors)}")
+                
+                if service_has_descriptors:
+                    total_chars_with_desc = sum(1 for char in characteristics 
+                                              if hasattr(char, 'descriptors') and char.descriptors)
+                    print(f"\n  Total characteristics with descriptors in this service: {total_chars_with_desc}")
+            
+            print(f"\n{'='*60}")
+            print(f"SUMMARY")
+            print(f"{'='*60}")
+            print(f"Total services scanned: {len(services_list)}")
+            print(f"Total descriptors found: {total_descriptors}")
+            
+        else:
+            print("✗ Connection failed")
+            
+    except asyncio.TimeoutError:
+        print("✗ Connection timeout")
+    except BleakError as e:
+        print(f"✗ Bleak error: {str(e)}")
+    except Exception as e:
+        print(f"✗ Unexpected error: {type(e).__name__}: {str(e)}")
+    finally:
+        if client and client.is_connected:
+            try:
+                print("\nDisconnecting...")
+                await client.disconnect()
+                print("✓ Disconnected successfully")
+            except Exception as e:
+                print(f"⚠ Warning during disconnect: {str(e)}")
+    
+    print(f"\n{'='*60}")
+
 def get_service_name(uuid: str) -> str:
     """Возвращает читаемое имя сервиса по UUID"""
     uuid_lower = uuid.lower()
@@ -469,12 +709,16 @@ async def explore_device(device_address: str, device_name: str = None):
                         descriptors = char.descriptors if hasattr(char, 'descriptors') else []
                         desc_count = len(descriptors) if descriptors else 0
                     except:
+                        descriptors = []
                         desc_count = 0
                     
                     desc_handle = f", Descriptors: {desc_count}" if desc_count > 0 else ""
                     
                     # Определяем префикс для дерева
-                    prefix = "    └── " if char_count == len(characteristics) else "    ├── "
+                    if char_count == len(characteristics):
+                        prefix = "    └── "
+                    else:
+                        prefix = "    ├── "
                     
                     print(f"{prefix}[{char_count}] Characteristic: {char_name}")
                     print(f"        UUID: {char_uuid_display}")
@@ -492,6 +736,33 @@ async def explore_device(device_address: str, device_name: str = None):
                             print(f"        Value: <read timeout>")
                         except Exception as e:
                             print(f"        Value: <read error: {str(e)}>")
+                    
+                    # Показываем дескрипторы с их значениями
+                    if descriptors:
+                        for desc_index, desc in enumerate(descriptors):
+                            desc_name = get_descriptor_name(desc.uuid)
+                            desc_handle_val = desc.handle if hasattr(desc, 'handle') else "N/A"
+                            
+                            # Определяем префикс для дерева дескрипторов
+                            if desc_index == len(descriptors) - 1:
+                                if char_count == len(characteristics):
+                                    prefix = "        └── "
+                                else:
+                                    prefix = "        ├── "
+                            else:
+                                prefix = "        ├── "
+                            
+                            print(f"{prefix}Descriptor: {desc_name}")
+                            print(f"        │   UUID: {desc.uuid}")
+                            print(f"        │   Handle: 0x{desc_handle_val:04X}" if isinstance(desc_handle_val, int) else f"        │   Handle: {desc_handle_val}")
+                            
+                            # Читаем значение дескриптора
+                            if client and client.is_connected and hasattr(desc, 'handle'):
+                                try:
+                                    desc_value = await read_descriptor_value(client, desc)
+                                    print(f"        │   Value: {desc_value}")
+                                except Exception as e:
+                                    print(f"        │   Value: <error reading: {str(e)}>")
                 
                 if not characteristics:
                     print("    └── No characteristics found")
@@ -500,7 +771,11 @@ async def explore_device(device_address: str, device_name: str = None):
             
             print(f"\nTotal: {len(services_list)} service(s)")
             total_chars = sum(len(getattr(s, 'characteristics', [])) for s in services_list)
+            total_descriptors = sum(len(getattr(char, 'descriptors', [])) 
+                                  for service in services_list 
+                                  for char in getattr(service, 'characteristics', []))
             print(f"Total characteristics: {total_chars}")
+            print(f"Total descriptors: {total_descriptors}")
             
         else:
             print("✗ Connection failed: Not connected after connect() call")
@@ -637,7 +912,7 @@ async def main_loop():
     print_list()
     
     while True:
-        s = input("\nEnter device number to show adv (L=list & rescan, p=print parsed, c=connect & explore, q=quit): ").strip()
+        s = input("\nEnter device number to show adv (L=list & rescan, p=print parsed, c=connect & explore, d=detailed descriptors, q=quit): ").strip()
         if not s:
             continue
         if s.lower() == "q":
@@ -678,6 +953,19 @@ async def main_loop():
                 continue
             device, adv = entry
             await explore_device(device.address, short_name(device))
+            continue
+        if s.lower() == "d":
+            if last_selected_addr is None:
+                print("No device selected yet. Choose a device number first.")
+                continue
+            
+            entry = LATEST.get(last_selected_addr)
+            if not entry:
+                print("Selected device is no longer available. Rescan (L) to refresh.")
+                continue
+            
+            device, adv = entry
+            await explore_descriptors_detailed(device.address, short_name(device))
             continue
         
         try:
