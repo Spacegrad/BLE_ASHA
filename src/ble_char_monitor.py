@@ -68,7 +68,7 @@ class IAIMonitorAuto:
         brand_devices.sort(key=lambda x: x[2].lower())
         
         # Выводим Prima устройства
-        print("PRIMA DEVICES:")
+        print("IAI DEVICES:")
         for i, (addr, device, name, rssi) in enumerate(brand_devices, 1):
             print(f"{i:<3} {name:<25} {addr:<20} RSSI: {rssi}")
         
