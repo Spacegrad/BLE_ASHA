@@ -29,6 +29,9 @@ class IAIMonitorAuto:
         self.target_description = "IAI_RX_SET"
         self.target_char = None
         self.auto_read_interval = 2.0  # Интервал авто-чтения в секундах
+        self.progress_bar_len = 60
+        self.progress_fill = "█"   # заполненный прямоугольник U+2588
+        self.progress_empty = " "  # пустой символ
 
         # Новые опции
         self.sort_by_rssi = False   # False = сортировка по имени, True = по RSSI (desc)
@@ -51,8 +54,27 @@ class IAIMonitorAuto:
         scanner = BleakScanner(detection_callback=self.detection_callback)
 
         await scanner.start()
-        await asyncio.sleep(seconds)
-        await scanner.stop()
+        # Показываем прогресс-бар в одной строке
+        start = time.time()
+        per_sec = self.progress_bar_len / seconds
+        filled = 0
+        try:
+            while True:
+                elapsed = time.time() - start
+                if elapsed >= seconds:
+                    break
+                # вычисляем сколько символов заполнено
+                new_filled = int(elapsed * per_sec)
+                if new_filled != filled:
+                    filled = new_filled
+                    bar = self.progress_fill * filled + self.progress_empty * (self.progress_bar_len - filled)
+                    print(f"\r{bar} {int(elapsed):2d}/{int(seconds)}s", end="", flush=True)
+                await asyncio.sleep(0.1)
+        finally:
+            # завершить строку и остановить сканер
+            print(f"\r{'█'*self.progress_bar_len} {int(seconds)}/{int(seconds)}s")
+            await scanner.stop()
+
 
         if not self.devices:
             print("No devices found.")
